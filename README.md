@@ -29,6 +29,12 @@ Then invoke with `/describe-motion` or let Claude trigger it automatically when 
 
 ## When to use
 
+Three input shapes are supported:
+
+1. **Media file** — video, gif, screen recording, or frame sequence.
+2. **Live URL + verbal description** — e.g., "how is the fade-in on yafafits.com done". The skill reads the page source for exact CSS/JS values, and falls back to asking for a DOM snippet or recording when the page can't be fetched.
+3. **DOM/CSS snippet** — paste the markup and styles directly.
+
 Trigger phrases the skill responds to:
 
 - "Implement this animation"
@@ -36,12 +42,16 @@ Trigger phrases the skill responds to:
 - "Match this motion"
 - "How would I code this" (with a video/gif attached)
 - "Translate this video to code"
+- "How is the [animation] on [url] done"
+- "Describe the [hover/scroll/fade] at [url]"
 
-If the input is a static screenshot with no motion, this is the wrong tool — use a layout/UI description skill instead.
+If the input is a static screenshot with no motion and no URL, this is the wrong tool — use a layout/UI description skill instead.
 
 ## Working with the artifact
 
-The skill assumes you can extract frames. Quick references:
+### Media files
+
+The skill extracts frames when possible:
 
 ```bash
 # Video → frames at 30fps
@@ -55,6 +65,12 @@ magick input.gif -coalesce frames/%04d.png
 ```
 
 If frame extraction isn't possible in the current environment, the skill marks affected fields as `~estimated`.
+
+### URL inputs
+
+For URLs, the skill prefers reading the actual source over visual inspection — exact CSS values beat frame counting. It uses `WebFetch` to pull HTML and inline CSS, then narrows to the element the user described.
+
+When fetching is blocked (Cloudflare, 403, JS-heavy bundles), the skill asks the user for a DOM snippet or a Chrome Animations-panel screenshot rather than inventing values. See [`examples/04-website-url-fade-in.md`](./examples/04-website-url-fade-in.md) for both paths.
 
 ## License
 

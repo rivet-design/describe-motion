@@ -1,6 +1,6 @@
 ---
 name: describe-motion
-description: Translate a motion artifact (video, gif, screen recording, or animated screenshot sequence) into a precise implementation prompt for a coding agent. Use whenever the user provides a video/gif/recording of an interaction and wants to recreate it in code — phrases like "implement this animation", "build this interaction", "match this motion", "how would I code this", "translate this video to code", or when the user attaches a .mov/.mp4/.gif/.webm and asks to recreate the behavior shown. Produces a structured prompt covering elements, triggers, states, per-property timing & easing, choreography, and edge cases.
+description: Translate a motion artifact (video, gif, screen recording, animated screenshot sequence, or a live website URL) into a precise implementation prompt for a coding agent. Use whenever the user provides motion — either a media file or a URL with a verbal description ("how is the fade-in on this site done", "describe the hover on yafafits.com", "match the scroll animation at <url>") — and wants to recreate it in code. Also fires on phrases like "implement this animation", "build this interaction", "match this motion", "how would I code this", "translate this video to code". Produces a structured prompt covering elements, triggers, states, per-property timing & easing, choreography, and edge cases.
 ---
 
 # describe-motion
@@ -11,7 +11,13 @@ The output is a prompt, not code. You hand it to whoever is going to build the t
 
 ## When to use this
 
-Use whenever the user gives you motion (video, gif, screen recording, frame sequence) and wants it implemented. If the input is a static screenshot with no motion, this skill is the wrong tool — use a layout/UI description skill instead. If the user wants you to build the thing directly, run this skill first and then implement from the output.
+Use whenever the user gives you motion and wants it implemented. Three input shapes are supported:
+
+1. **Media file** — video, gif, screen recording, or frame sequence.
+2. **Live URL + verbal description** — the user points at a site and describes the interaction they want to replicate (e.g., "the fade-in on yafafits.com").
+3. **DOM/CSS snippet** — the user pastes the relevant markup and wants it described or improved.
+
+If the input is a static screenshot with no motion and no URL, this skill is the wrong tool — use a layout/UI description skill instead. If the user wants you to build the thing directly, run this skill first and then implement from the output.
 
 ## How to read the artifact
 
@@ -23,6 +29,57 @@ Before describing anything, get frames you can actually inspect. Guessing from m
 - **Frame sequence already provided:** look at every frame, not just first/last. The middle frames reveal the easing.
 
 If you cannot extract frames (no tooling, web-only context), say so explicitly in the output and mark timing/easing fields as `~estimated`.
+
+## How to read a URL input
+
+When the user gives you a URL plus a verbal description ("how is the fade-in done on this site"), the source code is the ground truth. Prefer reading it over guessing from visual inspection — the actual CSS/JS gives you exact duration, easing, and property values without any frame counting.
+
+### Step 1 — Fetch the page
+
+Use `WebFetch` (or an equivalent tool) to pull the page HTML and any inline CSS. Ask it specifically for:
+
+- The framework or builder (Framer, Webflow, Next.js, Squarespace, custom). Identify from meta tags, `data-*` attributes, script src patterns, and class naming.
+- Every `@keyframes` definition (name + keyframe values).
+- Every `transition:` declaration (property, duration, timing-function, delay).
+- Inline `style="..."` attributes containing `transform`, `opacity`, or `transition`.
+- Script tags importing animation libraries: `framer-motion`, `gsap`, `lottie`, `motion`, `react-spring`, `animejs`.
+
+### Step 2 — Match the verbal description to a specific element
+
+The user said "the fade-in" or "the hover" — narrow that to a selector. Use their wording as a filter:
+
+- "Hero", "header" → the element near the top of the body, often `<section>` or `<header>`.
+- "Card", "tile" → repeated children of a grid container.
+- "Button", "CTA" → `<a>` or `<button>` elements with prominent styling.
+- "On scroll" → look for `IntersectionObserver` JS, or Framer's `data-framer-appear-id` and `data-framer-appear-animation`.
+- "On load", "fade-in" → look for elements with initial `opacity: 0` in inline styles, plus a transition or class-toggle that brings them to 1.
+
+If multiple elements match, ask the user one clarifying question rather than guessing.
+
+### Step 3 — Framework-specific hints
+
+Different builders expose motion differently. Knowing the builder narrows where to look:
+
+- **Framer-built sites** — look for `data-framer-component-type`, `data-framer-appear-id`, and inline styles with `transform`. Framer often inlines the animation as initial state + a transition triggered by an `IntersectionObserver`. Easing values are typically cubic-bezier strings in CSS variables like `--framer-transition-timing-function`.
+- **Webflow** — `data-w-id` attributes link to interactions defined in a JSON blob loaded by `webflow.js`. The motion config is in that JSON; find the matching ID.
+- **React + Framer Motion** — look for `motion.*` components in the JSX (if SSR'd source is readable) and inline `style` attributes that Framer Motion writes (`transform: translateY(...)`, `opacity: ...`). Bundle-minified `transition={...}` objects may still be visible as JSON literals.
+- **GSAP** — look for `gsap.from(`, `gsap.to(`, `ScrollTrigger.create(`. GSAP's timeline calls usually survive minification by name.
+- **CSS-only** — `@keyframes` plus `animation:` shorthand on an element. Easiest to read directly.
+
+### Step 4 — Fallback when WebFetch is blocked or insufficient
+
+Some sites block automated fetches (403/Cloudflare) or load animations entirely from JS bundles that resist parsing. When that happens, do not invent values. Instead, ask the user for one of:
+
+- **A DOM snippet** — they right-click the animating element → Inspect → copy the outer HTML, plus the relevant rules from the Styles panel.
+- **A network HAR or a paste of the CSS file** — for keyframes and transitions.
+- **A screen recording** — fall back to the media-file path above and treat timing as estimated.
+- **A devtools Animations panel screenshot** — Chrome's Animations panel shows duration and easing curves for any animation currently playing on the page.
+
+State the fallback clearly: "I couldn't fetch the page (403). To get exact values, paste the DOM and Styles for the animating element, or share a screen recording."
+
+### Step 5 — Cross-check against the verbal description
+
+If the user said "subtle slide up and fade" but the source shows only `opacity` changing, trust the source — and note the discrepancy. Either the slide is happening via a different mechanism (e.g., parent container), or the user is misremembering. Surface it: "Source shows opacity-only; you described a slide. Was there a translateY you'd like me to add, or were you describing a different element?"
 
 ## The five-phase pass
 
@@ -107,9 +164,17 @@ Always produce this exact shape. If a field is not observable, write `not visibl
 # Motion spec: <short name>
 
 ## Source
-- Artifact: <filename or description>
-- Frames inspected: <count or "single playback only">
-- Estimated framerate: <30/60/unknown>
+- Artifact: <filename, URL, or description>
+- Input type: <video | gif | recording | URL | DOM snippet>
+- Frames inspected: <count or "single playback only" or "n/a — source-read">
+- Estimated framerate: <30/60/unknown — omit if URL>
+- Framework detected: <Framer | Webflow | React + Framer Motion | GSAP | CSS-only | unknown — only for URL>
+
+## Source code findings (URL/DOM inputs only — omit otherwise)
+- Relevant CSS rules: <quoted selectors + declarations>
+- Relevant inline styles: <quoted style attributes>
+- Animation library imports: <list>
+- Element targeted: <selector that matched the verbal description>
 
 ## Trigger
 - Event: <hover|click|mount|...>
